@@ -31,6 +31,24 @@ bash runs/speedrun.sh
 python -m scripts.base_train --depth=12 --run="d12" --model-tag="d12"
 ```
 
+**Blackwell B200 MXFP8 training (1.28x faster, recommended):**
+```bash
+OMP_NUM_THREADS=1 torchrun --standalone --nproc_per_node=8 -m scripts.base_train -- \
+    --depth=26 \
+    --run="d26-mxfp8" \
+    --model-tag="d26-mxfp8" \
+    --mxfp8
+```
+
+**Blackwell B200 NVFP4 training (1.9x faster, experimental):**
+```bash
+OMP_NUM_THREADS=1 torchrun --standalone --nproc_per_node=8 -m scripts.base_train -- \
+    --depth=26 \
+    --run="d26-nvfp4" \
+    --model-tag="d26-nvfp4" \
+    --nvfp4
+```
+
 ### Evaluation Commands
 
 **Evaluate base model:**
@@ -101,6 +119,14 @@ Modern GPT with optimizations:
 - **Value embeddings** (ResFormer-style, alternating layers)
 - **Per-layer learnable scalars**: `resid_lambdas` (residual scaling), `x0_lambdas` (input embedding blending)
 - **FlashAttention 3** with KV caching (falls back to FA2/SDPA)
+
+**Training Precision Options:**
+- **BF16** (default): Standard bfloat16 training, compatible with all GPUs
+- **FP8** (Hopper H100+): Float8Linear via torchao, ~1.2x speedup
+- **MXFP8** (Blackwell B200+): Microscaling FP8, 1.28x speedup, production-ready (recommended for Blackwell)
+- **NVFP4** (Blackwell B200+): 4-bit floating point, 1.9x speedup, experimental
+
+All precision formats fall back to BF16 during evaluation for consistent accuracy measurement.
 
 ### Hyperparameter Transfer System
 
@@ -198,7 +224,10 @@ OMP_NUM_THREADS=1 torchrun --standalone --nproc_per_node=8 -m scripts.base_train
 - `--target-param-data-ratio`: Tokens:Params ratio (default 10.5 for compute-optimal)
 - `--run`: wandb run name
 - `--model-tag`: Checkpoint directory name
-- `--fp8`: Enable fp8 training (H100 only)
+- `--fp8`: Enable FP8 training (Hopper H100 only)
+- `--mxfp8`: Enable MXFP8 training (Blackwell B200+ only, recommended for Blackwell)
+- `--nvfp4`: Enable NVFP4 training (Blackwell B200+ only, experimental, highest speedup)
+- `--precision-recipe`: Scaling recipe (tensorwise/rowwise/blockwise) for MXFP8/NVFP4
 
 ### Monitoring Training (wandb)
 
