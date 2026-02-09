@@ -1,5 +1,5 @@
 """
-Test Blackwell precision formats (MXFP8, NVFP4).
+Test Blackwell precision formats (MXFP8).
 
 These tests require a Blackwell B200+ GPU and will be skipped on other hardware.
 
@@ -174,7 +174,7 @@ class TestMXFP8Training:
         @contextmanager
         def disable_low_precision(model):
             """Temporarily swap low-precision Linear modules with nn.Linear."""
-            low_precision_types = ['Float8', 'MXLinear', 'NVFP4']
+            low_precision_types = ['Float8', 'MXLinear']
             lp_locations = []
 
             for name, module in model.named_modules():
@@ -243,110 +243,22 @@ class TestMXFP8Training:
         assert mxfp_count_after == 2, "MXLinear modules not restored after context"
 
 
-@pytest.mark.skipif(not is_blackwell_gpu(), reason="Requires Blackwell GPU")
-class TestNVFP4Training:
-    """Test NVFP4 training on Blackwell B200 (experimental)."""
-
-    DEVICE = "cuda"
-    DTYPE = torch.bfloat16
-
-    def test_nvfp4_conversion(self):
-        """Test NVFP4 conversion works correctly."""
-        # Create a simple model with Linear layers
-        model = nn.Sequential(
-            nn.Linear(128, 256),
-            nn.ReLU(),
-            nn.Linear(256, 128),
-        ).to(self.DEVICE).to(self.DTYPE)
-
-        # Convert to NVFP4
-        try:
-            from torchao.quantization import NVFP4LinearConfig, convert_to_nvfp4_training
-
-            def module_filter(mod: nn.Module, fqn: str) -> bool:
-                if not isinstance(mod, nn.Linear):
-                    return False
-                if mod.in_features % 16 != 0 or mod.out_features % 16 != 0:
-                    return False
-                return True
-
-            config = NVFP4LinearConfig(block_size=16, recipe="tensorwise")
-            convert_to_nvfp4_training(model, config=config, module_filter_fn=module_filter)
-
-            # Verify conversion
-            nvfp4_count = sum(1 for m in model.modules() if 'NVFP4' in type(m).__name__)
-            assert nvfp4_count == 2, f"Expected 2 NVFP4 layers, got {nvfp4_count}"
-
-        except ImportError as e:
-            pytest.skip(f"NVFP4 not available in torchao: {e}")
-
-    def test_nvfp4_forward_backward(self):
-        """Test NVFP4 forward and backward passes."""
-        try:
-            from torchao.quantization import NVFP4LinearConfig, convert_to_nvfp4_training
-        except ImportError as e:
-            pytest.skip(f"NVFP4 not available in torchao: {e}")
-
-        # Create model
-        model = nn.Sequential(
-            nn.Linear(128, 256),
-            nn.ReLU(),
-            nn.Linear(256, 128),
-        ).to(self.DEVICE).to(self.DTYPE)
-
-        # Convert to NVFP4
-        def module_filter(mod: nn.Module, fqn: str) -> bool:
-            if not isinstance(mod, nn.Linear):
-                return False
-            if mod.in_features % 16 != 0 or mod.out_features % 16 != 0:
-                return False
-            return True
-
-        config = NVFP4LinearConfig(block_size=16, recipe="tensorwise")
-        convert_to_nvfp4_training(model, config=config, module_filter_fn=module_filter)
-
-        # Forward pass
-        x = torch.randn(8, 128, device=self.DEVICE, dtype=self.DTYPE)
-        y = model(x)
-        assert y.shape == (8, 128)
-        assert not torch.isnan(y).any(), "Forward pass produced NaNs"
-
-        # Backward pass
-        loss = y.sum()
-        loss.backward()
-
-        # Verify gradients exist
-        for name, param in model.named_parameters():
-            assert param.grad is not None, f"No gradient for {name}"
-            assert not torch.isnan(param.grad).any(), f"Gradient for {name} contains NaNs"
-
-
 def test_mutex_enforcement():
     """Test that only one precision flag can be active."""
     # This test just documents the expected behavior
     # Actual enforcement happens in base_train.py argument parsing
 
     # Simulate the mutex check
-    def check_mutex(fp8, mxfp8, nvfp4):
-        precision_flags = [fp8, mxfp8, nvfp4]
+    def check_mutex(fp8, mxfp8):
+        precision_flags = [fp8, mxfp8]
         if sum(precision_flags) > 1:
-            raise ValueError("Only one of --fp8, --mxfp8, --nvfp4 can be specified")
+            raise ValueError("Only one of --fp8, --mxfp8 can be specified")
 
     # Valid: only one flag
-    check_mutex(True, False, False)  # Should not raise
-    check_mutex(False, True, False)  # Should not raise
-    check_mutex(False, False, True)  # Should not raise
-    check_mutex(False, False, False)  # Should not raise
+    check_mutex(True, False)  # Should not raise
+    check_mutex(False, True)  # Should not raise
+    check_mutex(False, False)  # Should not raise
 
     # Invalid: multiple flags
     with pytest.raises(ValueError):
-        check_mutex(True, True, False)
-
-    with pytest.raises(ValueError):
-        check_mutex(True, False, True)
-
-    with pytest.raises(ValueError):
-        check_mutex(False, True, True)
-
-    with pytest.raises(ValueError):
-        check_mutex(True, True, True)
+        check_mutex(True, True)

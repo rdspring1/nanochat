@@ -185,7 +185,6 @@ python benchmarks/float8/bench_matmul.py --recipe mxfp8_cublas
 |--------|---------------------|------------|
 | BF16 baseline | 7.547 | 0.7427 |
 | MXFP8 | 7.605 | 0.7356 |
-| NVFP4 | 8.445 | 0.7182 |
 
 *Note: Inference accuracy results are WIP and not yet optimized*
 
@@ -224,7 +223,6 @@ All kernels are torch.compile compatible:
 
 Beyond mxfp8, also supports:
 - **MXFP4**: 4-bit float (experimental)
-- **NVFP4**: NVIDIA 4-bit float (1.9x speedup, experimental)
 - **Custom FP6**: E2M3 and E3M2 variants
 
 ## Hardware Requirements
@@ -286,7 +284,6 @@ Per the torchao roadmap:
 - Stochastic rounding for improved fp4 training numerics
 - Hadamard transforms for better low-precision training
 - Performance optimizations for inference
-- Polish NVFP4 QAT recipe
 - Enable MXFP4 QAT
 
 ## References

@@ -65,19 +65,6 @@ def supports_mxfp8():
     return is_blackwell_gpu()
 
 
-def supports_nvfp4():
-    """
-    Check if NVFP4 (4-bit floating point) training is supported.
-
-    NVFP4 requires Blackwell B200+ GPU and CUDA 12.8+.
-    Note: NVFP4 is experimental in torchao.
-
-    Returns:
-        bool: True if NVFP4 is supported on current hardware
-    """
-    return is_blackwell_gpu()
-
-
 def get_gpu_name():
     """
     Get human-readable GPU name for logging.

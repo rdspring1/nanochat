@@ -40,15 +40,6 @@ OMP_NUM_THREADS=1 torchrun --standalone --nproc_per_node=8 -m scripts.base_train
     --mxfp8
 ```
 
-**Blackwell B200 NVFP4 training (1.9x faster, experimental):**
-```bash
-OMP_NUM_THREADS=1 torchrun --standalone --nproc_per_node=8 -m scripts.base_train -- \
-    --depth=26 \
-    --run="d26-nvfp4" \
-    --model-tag="d26-nvfp4" \
-    --nvfp4
-```
-
 ### Evaluation Commands
 
 **Evaluate base model:**
@@ -124,7 +115,6 @@ Modern GPT with optimizations:
 - **BF16** (default): Standard bfloat16 training, compatible with all GPUs
 - **FP8** (Hopper H100+): Float8Linear via torchao, ~1.2x speedup
 - **MXFP8** (Blackwell B200+): Microscaling FP8, 1.28x speedup, production-ready (recommended for Blackwell)
-- **NVFP4** (Blackwell B200+): 4-bit floating point, 1.9x speedup, experimental
 
 All precision formats fall back to BF16 during evaluation for consistent accuracy measurement.
 
@@ -226,8 +216,7 @@ OMP_NUM_THREADS=1 torchrun --standalone --nproc_per_node=8 -m scripts.base_train
 - `--model-tag`: Checkpoint directory name
 - `--fp8`: Enable FP8 training (Hopper H100 only)
 - `--mxfp8`: Enable MXFP8 training (Blackwell B200+ only, recommended for Blackwell)
-- `--nvfp4`: Enable NVFP4 training (Blackwell B200+ only, experimental, highest speedup)
-- `--precision-recipe`: Scaling recipe (tensorwise/rowwise/blockwise) for MXFP8/NVFP4
+- `--precision-recipe`: Scaling recipe (tensorwise/rowwise/blockwise) for MXFP8
 
 ### Monitoring Training (wandb)
 

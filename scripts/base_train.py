@@ -46,8 +46,7 @@ parser.add_argument("--device-type", type=str, default="", help="cuda|cpu|mps (e
 parser.add_argument("--fp8", action="store_true", help="enable FP8 training (requires Hopper H100+ GPU and torchao)")
 parser.add_argument("--fp8-recipe", type=str, default="tensorwise", choices=["rowwise", "tensorwise"], help="FP8 scaling recipe: tensorwise (faster, recommended) or rowwise (more accurate but slower)")
 parser.add_argument("--mxfp8", action="store_true", help="enable MXFP8 training (requires Blackwell B200+ GPU and torchao 0.15+)")
-parser.add_argument("--nvfp4", action="store_true", help="enable NVFP4 training (requires Blackwell B200+ GPU and torchao latest, EXPERIMENTAL)")
-parser.add_argument("--precision-recipe", type=str, default="tensorwise", choices=["tensorwise", "rowwise", "blockwise"], help="Scaling recipe for mxfp8/nvfp4: tensorwise (fast), rowwise (accurate), blockwise (mxfp8 only)")
+parser.add_argument("--precision-recipe", type=str, default="tensorwise", choices=["tensorwise", "rowwise", "blockwise"], help="Scaling recipe for mxfp8: tensorwise (fast), rowwise (accurate), blockwise (most accurate)")
 # Model architecture
 parser.add_argument("--depth", type=int, default=20, help="depth of the Transformer model")
 parser.add_argument("--aspect-ratio", type=int, default=64, help="model_dim = depth * aspect_ratio")
@@ -85,9 +84,9 @@ args = parser.parse_args()
 user_config = vars(args).copy()  # for logging
 
 # Validate precision mode flags - only one can be active
-precision_flags = [args.fp8, args.mxfp8, args.nvfp4]
+precision_flags = [args.fp8, args.mxfp8]
 if sum(precision_flags) > 1:
-    raise ValueError("Only one of --fp8, --mxfp8, --nvfp4 can be specified")
+    raise ValueError("Only one of --fp8, --mxfp8 can be specified")
 
 # -----------------------------------------------------------------------------
 # Compute init and wandb logging
@@ -226,56 +225,18 @@ if args.mxfp8:
             print0(f"Warning: Could not import MXFP8 from torchao: {e}")
             print0("Ensure torchao >= 0.15.0 is installed")
 
-# Convert Linear layers to NVFP4 if --nvfp4 is set
-if args.nvfp4:
-    from nanochat.gpu_capability import is_blackwell_gpu, get_gpu_name
-    if device_type != "cuda":
-        print0("Warning: NVFP4 training requires CUDA, ignoring --nvfp4 flag")
-    elif not is_blackwell_gpu():
-        print0(f"Warning: NVFP4 requires Blackwell B200+ GPU (detected: {get_gpu_name()}), ignoring --nvfp4 flag")
-    else:
-        print0("!" * 80)
-        print0("WARNING: NVFP4 training is EXPERIMENTAL (torchao prototype)")
-        print0("WARNING: May have stability issues, use at your own risk")
-        print0("!" * 80)
-
-        try:
-            from torchao.quantization import NVFP4LinearConfig, convert_to_nvfp4_training
-            import torch.nn as nn
-
-            # Same filter as mxfp8/fp8
-            def nvfp4_module_filter(mod: nn.Module, fqn: str) -> bool:
-                if not isinstance(mod, nn.Linear):
-                    return False
-                if mod.in_features % 16 != 0 or mod.out_features % 16 != 0:
-                    return False
-                return True
-
-            # NVFP4 uses block_size=16 (E2M1 format)
-            nvfp4_config = NVFP4LinearConfig(
-                block_size=16,
-                recipe=args.precision_recipe
-            )
-            convert_to_nvfp4_training(model, config=nvfp4_config, module_filter_fn=nvfp4_module_filter)
-            num_nvfp4_layers = sum(1 for m in model.modules() if 'NVFP4' in type(m).__name__)
-            num_skipped = sum(1 for m in model.modules() if isinstance(m, nn.Linear)) - num_nvfp4_layers
-            print0(f"✓ NVFP4 training enabled (block_size=16, {args.precision_recipe}, EXPERIMENTAL) - converted {num_nvfp4_layers} layers, skipped {num_skipped}")
-        except ImportError as e:
-            print0(f"Warning: Could not import NVFP4 from torchao: {e}")
-            print0("NVFP4 is a prototype feature - ensure latest torchao installed")
-
 # Context manager to temporarily disable low-precision training so that model evaluation remains in BF16
 @contextmanager
 def disable_low_precision(model):
     """Temporarily swap low-precision Linear modules with nn.Linear for BF16 evaluation.
 
-    Supports: Float8Linear (FP8), MXFPLinear (MXFP8), NVFP4Linear (NVFP4)
+    Supports: Float8Linear (FP8), MXFPLinear (MXFP8)
     All modules share weights (no copy), only computation precision changes.
     """
     import torch.nn as nn
 
     # Find all low-precision modules and their locations
-    low_precision_types = ['Float8', 'MXFP', 'NVFP4']
+    low_precision_types = ['Float8', 'MXFP']
     lp_locations = []  # list of (parent_module, attr_name, lp_module)
 
     for name, module in model.named_modules():

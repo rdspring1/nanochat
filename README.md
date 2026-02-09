@@ -8,7 +8,6 @@ nanochat is the simplest experimental harness for training LLMs. It is designed 
 **GPU Support**: nanochat supports training on Hopper (H100/H200) and Blackwell (B200/B200 Ultra) GPUs with optimized precision formats:
 - **FP8** for Hopper (1.2x speedup)
 - **MXFP8** for Blackwell (1.28x speedup, recommended)
-- **NVFP4** for Blackwell (1.9x speedup, experimental)
 
 For questions about the repo, I recommend either using [DeepWiki](https://deepwiki.com/karpathy/nanochat) from Devin/Cognition to ask questions about the repo, or use the [Discussions tab](https://github.com/karpathy/nanochat/discussions), or come by the [#nanochat](https://discord.com/channels/1020383067459821711/1427295580895314031) channel on Discord.
 
