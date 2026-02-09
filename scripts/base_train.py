@@ -42,9 +42,10 @@ parser = argparse.ArgumentParser(description="Pretrain base model")
 parser.add_argument("--run", type=str, default="dummy", help="wandb run name ('dummy' disables wandb logging)")
 # Runtime
 parser.add_argument("--device-type", type=str, default="", help="cuda|cpu|mps (empty = autodetect)")
-# FP8 training
-parser.add_argument("--fp8", action="store_true", help="enable FP8 training (requires H100+ GPU and torchao)")
+# Low-precision training
+parser.add_argument("--fp8", action="store_true", help="enable FP8 training (requires Hopper H100+ GPU and torchao)")
 parser.add_argument("--fp8-recipe", type=str, default="tensorwise", choices=["rowwise", "tensorwise"], help="FP8 scaling recipe: tensorwise (faster, recommended) or rowwise (more accurate but slower)")
+parser.add_argument("--mxfp8", action="store_true", help="enable MXFP8 training (requires Blackwell B200+ GPU and torchao 0.15+)")
 # Model architecture
 parser.add_argument("--depth", type=int, default=20, help="depth of the Transformer model")
 parser.add_argument("--aspect-ratio", type=int, default=64, help="model_dim = depth * aspect_ratio")
@@ -80,6 +81,12 @@ parser.add_argument("--save-every", type=int, default=-1, help="save checkpoints
 parser.add_argument("--model-tag", type=str, default=None, help="override model tag for checkpoint directory name")
 args = parser.parse_args()
 user_config = vars(args).copy()  # for logging
+
+# Validate precision mode flags - only one can be active
+precision_flags = [args.fp8, args.mxfp8]
+if sum(precision_flags) > 1:
+    raise ValueError("Only one of --fp8, --mxfp8 can be specified")
+
 # -----------------------------------------------------------------------------
 # Compute init and wandb logging
 
@@ -183,52 +190,88 @@ if args.fp8:
         num_skipped = sum(1 for m in model.modules() if isinstance(m, nn.Linear)) - num_fp8_layers
         print0(f"✓ FP8 training enabled ({args.fp8_recipe} scaling) - converted {num_fp8_layers} layers, skipped {num_skipped} (dims not divisible by 16)")
 
-# Context manager to temporarily disable FP8 so that model evaluation remains in BF16
-@contextmanager
-def disable_fp8(model):
-    """Temporarily swap Float8Linear modules with nn.Linear for BF16 evaluation.
+# Convert Linear layers to MXFP8 if --mxfp8 is set
+if args.mxfp8:
+    from nanochat.gpu_capability import is_blackwell_gpu, get_gpu_name
+    if device_type != "cuda":
+        print0("Warning: MXFP8 training requires CUDA, ignoring --mxfp8 flag")
+    elif not is_blackwell_gpu():
+        print0(f"Warning: MXFP8 requires Blackwell B200+ GPU (detected: {get_gpu_name()}), ignoring --mxfp8 flag")
+    else:
+        try:
+            import torchao.prototype.mx_formats  # Register MXLinear
+            from torchao.prototype.mx_formats import MXLinearConfig
+            from torchao.prototype.mx_formats.config import MXLinearRecipeName
+            from torchao.quantization import quantize_
+            import torch.nn as nn
 
-    CastConfig is a frozen dataclass, so we can't mutate scaling_type. Instead,
-    we swap out Float8Linear modules entirely and restore them after.
+            # Same filter as fp8: dims divisible by 16
+            def mxfp_module_filter(mod: nn.Module, fqn: str) -> bool:
+                if not isinstance(mod, nn.Linear):
+                    return False
+                if mod.in_features % 16 != 0 or mod.out_features % 16 != 0:
+                    return False
+                return True
+
+            # Use MXFP8_CUBLAS recipe (block_size=32, FP8 precision)
+            mxfp_config = MXLinearConfig.from_recipe_name(MXLinearRecipeName.MXFP8_CUBLAS)
+            quantize_(model, mxfp_config, filter_fn=mxfp_module_filter)
+            num_mxfp_layers = sum(1 for m in model.modules() if 'MXLinear' in type(m).__name__)
+            num_skipped = sum(1 for m in model.modules() if isinstance(m, nn.Linear)) - num_mxfp_layers
+            print0(f"✓ MXFP8 training enabled (MXFP8_CUBLAS recipe) - converted {num_mxfp_layers} layers, skipped {num_skipped}")
+        except (ImportError, AttributeError) as e:
+            print0(f"Warning: Could not import MXFP8 from torchao: {e}")
+            print0("Ensure torchao >= 0.15.0 is installed")
+
+# Context manager to temporarily disable low-precision training so that model evaluation remains in BF16
+@contextmanager
+def disable_low_precision(model):
+    """Temporarily swap low-precision Linear modules with nn.Linear for BF16 evaluation.
+
+    Supports: Float8Linear (FP8), MXFPLinear (MXFP8)
+    All modules share weights (no copy), only computation precision changes.
     """
     import torch.nn as nn
 
-    # Find all Float8Linear modules and their locations
-    fp8_locations = []  # list of (parent_module, attr_name, fp8_module)
+    # Find all low-precision modules and their locations
+    low_precision_types = ['Float8', 'MXLinear']
+    lp_locations = []  # list of (parent_module, attr_name, lp_module)
+
     for name, module in model.named_modules():
-        if 'Float8' in type(module).__name__:
+        module_type = type(module).__name__
+        if any(lp_type in module_type for lp_type in low_precision_types):
             if '.' in name:
                 parent_name, attr_name = name.rsplit('.', 1)
                 parent = model.get_submodule(parent_name)
             else:
                 parent = model
                 attr_name = name
-            fp8_locations.append((parent, attr_name, module))
+            lp_locations.append((parent, attr_name, module))
 
-    if not fp8_locations:
-        yield  # No FP8 modules, nothing to do
+    if not lp_locations:
+        yield  # No low-precision modules, nothing to do
         return
 
-    # Swap Float8Linear -> nn.Linear (shares the same weight tensor, no copy)
-    for parent, attr_name, fp8_module in fp8_locations:
+    # Swap low-precision Linear -> nn.Linear (share weight tensor, no copy)
+    for parent, attr_name, lp_module in lp_locations:
         linear = nn.Linear(
-            fp8_module.in_features,
-            fp8_module.out_features,
-            bias=fp8_module.bias is not None,
-            device=fp8_module.weight.device,
-            dtype=fp8_module.weight.dtype,
+            lp_module.in_features,
+            lp_module.out_features,
+            bias=lp_module.bias is not None,
+            device=lp_module.weight.device,
+            dtype=lp_module.weight.dtype,
         )
-        linear.weight = fp8_module.weight  # share, don't copy
-        if fp8_module.bias is not None:
-            linear.bias = fp8_module.bias
+        linear.weight = lp_module.weight  # share, don't copy
+        if lp_module.bias is not None:
+            linear.bias = lp_module.bias
         setattr(parent, attr_name, linear)
 
     try:
         yield
     finally:
-        # Restore Float8Linear modules
-        for parent, attr_name, fp8_module in fp8_locations:
-            setattr(parent, attr_name, fp8_module)
+        # Restore low-precision modules
+        for parent, attr_name, lp_module in lp_locations:
+            setattr(parent, attr_name, lp_module)
 
 # -----------------------------------------------------------------------------
 # Compile the model
@@ -401,7 +444,7 @@ while True:
         model.eval()
         val_loader = build_val_loader()
         eval_steps = args.eval_tokens // (args.device_batch_size * args.max_seq_len * ddp_world_size)
-        with disable_fp8(model), autocast_ctx:
+        with disable_low_precision(model), autocast_ctx:
             val_bpb = evaluate_bpb(model, val_loader, eval_steps, token_bytes)
         print0(f"Step {step:05d} | Validation bpb: {val_bpb:.6f}")
         if val_bpb < min_val_bpb:
@@ -420,7 +463,7 @@ while True:
     results = {}
     if args.core_metric_every > 0 and (last_step or (step > 0 and step % args.core_metric_every == 0)):
         model.eval()
-        with disable_fp8(orig_model), autocast_ctx:
+        with disable_low_precision(orig_model), autocast_ctx:
             results = evaluate_core(orig_model, tokenizer, device, max_per_task=args.core_metric_max_per_task)
         print0(f"Step {step:05d} | CORE metric: {results['core_metric']:.4f}")
         wandb_run.log({
@@ -447,7 +490,7 @@ while True:
         engine = Engine(orig_model, tokenizer) # use orig_model to avoid recompilation
         for prompt in prompts:
             tokens = tokenizer(prompt, prepend="<|bos|>")
-            with disable_fp8(orig_model), autocast_ctx:
+            with disable_low_precision(orig_model), autocast_ctx:
                 sample, _ = engine.generate_batch(tokens, num_samples=1, max_tokens=16, temperature=0)
             print0(tokenizer.decode(sample[0]))
         model.train()

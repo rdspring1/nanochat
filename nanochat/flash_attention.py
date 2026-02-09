@@ -15,6 +15,7 @@ Usage (drop-in replacement for FA3):
 """
 import torch
 import torch.nn.functional as F
+from nanochat.gpu_capability import is_hopper_gpu
 
 
 # =============================================================================
@@ -22,14 +23,12 @@ import torch.nn.functional as F
 # =============================================================================
 def _load_flash_attention_3():
     """Try to load Flash Attention 3 (requires Hopper GPU, sm90)."""
-    if not torch.cuda.is_available():
-        return None
-    try:
-        major, _ = torch.cuda.get_device_capability()
+    if not is_hopper_gpu():
         # FA3 kernels are compiled for Hopper (sm90) only
         # Ada (sm89), Blackwell (sm100) need SDPA fallback until FA3 is recompiled
-        if major != 9:
-            return None
+        # TODO: Add Flash Attention 4 support for Blackwell (sm100) when backward pass available
+        return None
+    try:
         import os
         os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
         from kernels import get_kernel
