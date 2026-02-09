@@ -67,9 +67,9 @@ class TestMXFP8Training:
 
         # Create model
         model = nn.Sequential(
-            nn.Linear(128, 256),
+            nn.Linear(512, 256),
             nn.ReLU(),
-            nn.Linear(256, 128),
+            nn.Linear(256, 512),
         ).to(self.DEVICE).to(self.DTYPE)
 
         # Convert to MXFP8
@@ -84,14 +84,14 @@ class TestMXFP8Training:
         quantize_(model, config, filter_fn=module_filter)
 
         # Forward pass (batch size must be multiple of 32 for CUBLAS kernel)
-        x = torch.randn(32, 128, device=self.DEVICE, dtype=self.DTYPE)
+        x = torch.randn(128, 512, device=self.DEVICE, dtype=self.DTYPE)
         y = model(x)
-        assert y.shape == (32, 128)
+        assert y.shape == (128, 512)
         assert not torch.isnan(y).any(), "Forward pass produced NaNs"
 
         # Backward pass
-        loss = y.sum()
-        loss.backward()
+        g = torch.randn(128, 512, device="cuda", dtype=torch.bfloat16)
+        y.backward(g)
 
         # Verify gradients exist
         for name, param in model.named_parameters():
