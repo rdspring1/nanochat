@@ -46,7 +46,6 @@ parser.add_argument("--device-type", type=str, default="", help="cuda|cpu|mps (e
 parser.add_argument("--fp8", action="store_true", help="enable FP8 training (requires Hopper H100+ GPU and torchao)")
 parser.add_argument("--fp8-recipe", type=str, default="tensorwise", choices=["rowwise", "tensorwise"], help="FP8 scaling recipe: tensorwise (faster, recommended) or rowwise (more accurate but slower)")
 parser.add_argument("--mxfp8", action="store_true", help="enable MXFP8 training (requires Blackwell B200+ GPU and torchao 0.15+)")
-parser.add_argument("--precision-recipe", type=str, default="tensorwise", choices=["tensorwise", "rowwise", "blockwise"], help="Scaling recipe for mxfp8: tensorwise (fast), rowwise (accurate), blockwise (most accurate)")
 # Model architecture
 parser.add_argument("--depth", type=int, default=20, help="depth of the Transformer model")
 parser.add_argument("--aspect-ratio", type=int, default=64, help="model_dim = depth * aspect_ratio")
@@ -200,7 +199,10 @@ if args.mxfp8:
         print0(f"Warning: MXFP8 requires Blackwell B200+ GPU (detected: {get_gpu_name()}), ignoring --mxfp8 flag")
     else:
         try:
-            from torchao.float8 import MXFPLinearConfig, convert_to_mxfp_training
+            import torchao.prototype.mx_formats  # Register MXLinear
+            from torchao.prototype.mx_formats import MXLinearConfig
+            from torchao.prototype.mx_formats.config import MXLinearRecipeName
+            from torchao.quantization import quantize_
             import torch.nn as nn
 
             # Same filter as fp8: dims divisible by 16
@@ -211,17 +213,13 @@ if args.mxfp8:
                     return False
                 return True
 
-            # MXFP8 uses block_size=32 (32 elements per scaling factor)
-            mxfp_config = MXFPLinearConfig(
-                block_size=32,
-                precision="fp8",
-                recipe=args.precision_recipe
-            )
-            convert_to_mxfp_training(model, config=mxfp_config, module_filter_fn=mxfp_module_filter)
-            num_mxfp_layers = sum(1 for m in model.modules() if 'MXFP' in type(m).__name__)
+            # Use MXFP8_CUBLAS recipe (block_size=32, FP8 precision)
+            mxfp_config = MXLinearConfig.from_recipe_name(MXLinearRecipeName.MXFP8_CUBLAS)
+            quantize_(model, mxfp_config, filter_fn=mxfp_module_filter)
+            num_mxfp_layers = sum(1 for m in model.modules() if 'MXLinear' in type(m).__name__)
             num_skipped = sum(1 for m in model.modules() if isinstance(m, nn.Linear)) - num_mxfp_layers
-            print0(f"✓ MXFP8 training enabled (block_size=32, {args.precision_recipe}) - converted {num_mxfp_layers} layers, skipped {num_skipped}")
-        except ImportError as e:
+            print0(f"✓ MXFP8 training enabled (MXFP8_CUBLAS recipe) - converted {num_mxfp_layers} layers, skipped {num_skipped}")
+        except (ImportError, AttributeError) as e:
             print0(f"Warning: Could not import MXFP8 from torchao: {e}")
             print0("Ensure torchao >= 0.15.0 is installed")
 
@@ -236,7 +234,7 @@ def disable_low_precision(model):
     import torch.nn as nn
 
     # Find all low-precision modules and their locations
-    low_precision_types = ['Float8', 'MXFP']
+    low_precision_types = ['Float8', 'MXLinear']
     lp_locations = []  # list of (parent_module, attr_name, lp_module)
 
     for name, module in model.named_modules():
